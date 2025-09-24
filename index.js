@@ -1,4 +1,3 @@
-// index.js
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
@@ -70,8 +69,17 @@ wss.on('connection', (ws, req) => {
   });
 
   wsTarget.on('open', () => {
-    ws.on('message', (data) => wsTarget.send(data));
-    wsTarget.on('message', (data) => ws.send(data));
+    console.log('WebSocket 目标连接成功');
+    ws.on('message', (data) => {
+      const messageStr = data.toString(); // 确保字符串化
+      console.log('客户端消息发送到目标:', messageStr);
+      wsTarget.send(messageStr); // 发送字符串
+    });
+    wsTarget.on('message', (data) => {
+      const messageStr = data.toString(); // 确保字符串化
+      console.log('目标消息转发到客户端:', messageStr);
+      ws.send(messageStr); // 发送字符串
+    });
   });
 
   wsTarget.on('error', (err) => console.error('WebSocket 目标错误:', err.message));
