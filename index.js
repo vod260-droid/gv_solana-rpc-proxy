@@ -16,8 +16,7 @@ app.get('/health', (req, res) => {
   res.status(200).send('OK');
 });
 
-// 根路径快速返回
-app.get('/', (req, res) => res.send('Solana RPC Proxy Running'));
+
 
 // HTTP 代理
 app.all('*', async (req, res) => {
