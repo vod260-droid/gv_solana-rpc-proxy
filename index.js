@@ -8,6 +8,7 @@ const app = express();
 const TARGET_URL = process.env.TARGET_URL || 'https://api.mainnet-beta.solana.com';
 const PORT = process.env.PORT || 8080;
 
+// 让 express 保留原始 body（Buffer）
 app.use(express.raw({ type: '*/*' }));
 
 // 健康检查
@@ -27,11 +28,15 @@ app.all('*', async (req, res) => {
       method: req.method,
       headers: { ...req.headers },
     };
-    delete proxyReq.headers.host;
 
-    // **修正点**: GET/HEAD 请求不允许有 body
+    // 删除不必要的头
+    delete proxyReq.headers.host;
+    delete proxyReq.headers['content-length'];
+
+    // 只有非 GET/HEAD 才带 body
     if (!['GET', 'HEAD'].includes(req.method.toUpperCase())) {
-      proxyReq.body = req.body;
+      proxyReq.body = req.body.length ? req.body.toString() : undefined;
+      proxyReq.headers['content-type'] = 'application/json';
     }
 
     const proxyRes = await fetch(targetUrl, proxyReq);
@@ -42,7 +47,7 @@ app.all('*', async (req, res) => {
     }
     res.set('Cache-Control', 'no-store');
 
-    // 安全发送响应
+    // 转发响应内容
     const data = await proxyRes.arrayBuffer();
     res.send(Buffer.from(data));
   } catch (error) {
@@ -76,7 +81,7 @@ wss.on('connection', (ws, req) => {
   ws.on('close', () => wsTarget.close());
 });
 
-// **关键修改**: 绑定 0.0.0.0，使用 Cloud Run 指定端口
+// Cloud Run 要求监听 0.0.0.0
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`服务器启动成功，监听端口 ${PORT}`);
 });
