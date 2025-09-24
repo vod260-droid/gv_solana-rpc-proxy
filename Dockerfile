@@ -2,12 +2,11 @@ FROM node:18-alpine
 
 WORKDIR /app
 
-COPY package*.json ./
+COPY package.json .
+RUN npm ci --only=production --silent
 
-RUN npm ci --only=production
-
-COPY . .
+COPY index.js .
 
 EXPOSE 8080
 
-CMD ["npm", "start"]
+CMD ["node", "index.js"]
