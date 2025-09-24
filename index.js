@@ -16,8 +16,6 @@ app.get('/health', (req, res) => {
   res.status(200).send('OK');
 });
 
-
-
 // HTTP 代理
 app.all('*', async (req, res) => {
   const url = new URL(req.originalUrl, `http://${req.headers.host}`);
@@ -28,9 +26,13 @@ app.all('*', async (req, res) => {
     const proxyReq = {
       method: req.method,
       headers: { ...req.headers },
-      body: req.body,
     };
     delete proxyReq.headers.host;
+
+    // **修正点**: GET/HEAD 请求不允许有 body
+    if (!['GET', 'HEAD'].includes(req.method.toUpperCase())) {
+      proxyReq.body = req.body;
+    }
 
     const proxyRes = await fetch(targetUrl, proxyReq);
 
