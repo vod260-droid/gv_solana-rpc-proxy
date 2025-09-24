@@ -1,95 +1,76 @@
-const express = require('express');
 const http = require('http');
+const https = require('https');
 const WebSocket = require('ws');
-const fetch = require('node-fetch');
+const url = require('url');
 
-const app = express();
+// 目标服务器地址（通过环境变量配置）
 const TARGET_URL = process.env.TARGET_URL || 'https://api.mainnet-beta.solana.com';
-const PORT = process.env.PORT || 8080;
 
-// 让 express 保留原始 body（Buffer）
-app.use(express.raw({ type: '*/*' }));
+// 创建 HTTP 服务器
+const server = http.createServer((req, res) => {
+  // 解析请求 URL
+  const parsedUrl = url.parse(req.url);
+  const targetUrl = new URL(parsedUrl.path, TARGET_URL);
 
-// 健康检查
-app.get('/health', (req, res) => {
-  console.log('健康检查请求收到');
-  res.status(200).send('OK');
-});
+  // 构造代理请求选项
+  const options = {
+    method: req.method,
+    headers: { ...req.headers, host: targetUrl.host },
+    timeout: 5000,
+  };
 
-// HTTP 代理
-app.all('*', async (req, res) => {
-  const url = new URL(req.originalUrl, `http://${req.headers.host}`);
-  const targetUrl = TARGET_URL + url.pathname + url.search;
-  console.log(`HTTP 请求: ${req.method} ${targetUrl}`);
+  // 选择 HTTP 或 HTTPS 模块
+  const protocol = targetUrl.protocol === 'https:' ? https : http;
 
-  try {
-    const proxyReq = {
-      method: req.method,
-      headers: { ...req.headers },
-    };
+  // 发起代理请求
+  const proxyReq = protocol.request(targetUrl, options, (proxyRes) => {
+    res.writeHead(proxyRes.statusCode, {
+      ...proxyRes.headers,
+      'Access-Control-Allow-Origin': '*', // 可选：支持 CORS
+    });
+    proxyRes.pipe(res); // 直接流式传输响应
+  });
 
-    // 删除不必要的头
-    delete proxyReq.headers.host;
-    delete proxyReq.headers['content-length'];
-
-    // 只有非 GET/HEAD 才带 body
-    if (!['GET', 'HEAD'].includes(req.method.toUpperCase())) {
-      proxyReq.body = req.body.length ? req.body.toString() : undefined;
-      proxyReq.headers['content-type'] = 'application/json';
-    }
-
-    const proxyRes = await fetch(targetUrl, proxyReq);
-
-    res.status(proxyRes.status);
-    for (const [key, value] of proxyRes.headers) {
-      res.set(key, value);
-    }
-    res.set('Cache-Control', 'no-store');
-
-    // 转发响应内容
-    const data = await proxyRes.arrayBuffer();
-    res.send(Buffer.from(data));
-  } catch (error) {
-    console.error('HTTP 代理错误:', error.message);
-    res.status(502).json({ error: error.message });
+  // 转发请求体（如果有）
+  if (['POST', 'PUT', 'PATCH'].includes(req.method)) {
+    req.pipe(proxyReq);
+  } else {
+    proxyReq.end();
   }
+
+  proxyReq.on('error', (err) => {
+    console.error('HTTP Proxy Error:', err);
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Proxy Error' }));
+  });
 });
 
-// HTTP + WebSocket 共享 server
-const server = http.createServer(app);
+// WebSocket 转发
 const wss = new WebSocket.Server({ server });
-
 wss.on('connection', (ws, req) => {
-  const url = new URL(req.url, `http://${req.headers.host}`);
-  const targetWsUrl = TARGET_URL.replace('https://', 'wss://') + url.pathname + url.search;
-  console.log(`WebSocket 连接: ${targetWsUrl}`);
+  const targetUrl = `wss://api.mainnet-beta.solana.com${req.url}`;
+  console.log(`WebSocket connection to ${targetUrl}`);
 
-  const wsTarget = new WebSocket(targetWsUrl, {
-    headers: { 'User-Agent': 'Solana-RPC-Proxy/1.0' },
+  const targetWs = new WebSocket(targetUrl);
+
+  targetWs.on('open', () => console.log(`Connected to ${targetUrl}`));
+  targetWs.on('message', (data) => ws.readyState === WebSocket.OPEN && ws.send(data.toString()));
+  targetWs.on('close', () => ws.close());
+  targetWs.on('error', (err) => {
+    console.error('Target WebSocket error:', err);
+    ws.close();
   });
 
-  wsTarget.on('open', () => {
-    console.log('WebSocket 目标连接成功');
-    ws.on('message', (data) => {
-      const messageStr = data.toString(); // 确保字符串化
-      console.log('客户端消息发送到目标:', messageStr);
-      wsTarget.send(messageStr); // 发送字符串
-    });
-    wsTarget.on('message', (data) => {
-      const messageStr = data.toString(); // 确保字符串化
-      console.log('目标消息转发到客户端:', messageStr);
-      ws.send(messageStr); // 发送字符串
-    });
+  ws.on('message', (data) => targetWs.readyState === WebSocket.OPEN && targetWs.send(data));
+  ws.on('close', () => targetWs.close());
+  ws.on('error', (err) => {
+    console.error('Client WebSocket error:', err);
+    targetWs.close();
   });
-
-  wsTarget.on('error', (err) => console.error('WebSocket 目标错误:', err.message));
-  ws.on('error', (err) => console.error('WebSocket 客户端错误:', err.message));
-
-  wsTarget.on('close', () => ws.close());
-  ws.on('close', () => wsTarget.close());
 });
 
-// Cloud Run 要求监听 0.0.0.0
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`服务器启动成功，监听端口 ${PORT}`);
+// 监听端口（SCF Web 函数默认 9000）
+const port = process.env.PORT || 8080;
+server.listen(port, () => {
+  console.log(`Server running on port ${port}`);
 });
