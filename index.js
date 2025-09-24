@@ -1,3 +1,4 @@
+// index.js
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
@@ -9,11 +10,16 @@ const PORT = process.env.PORT || 8080;
 
 app.use(express.raw({ type: '*/*' }));
 
+// 健康检查
 app.get('/health', (req, res) => {
   console.log('健康检查请求收到');
   res.status(200).send('OK');
 });
 
+// 根路径快速返回
+app.get('/', (req, res) => res.send('Solana RPC Proxy Running'));
+
+// HTTP 代理
 app.all('*', async (req, res) => {
   const url = new URL(req.originalUrl, `http://${req.headers.host}`);
   const targetUrl = TARGET_URL + url.pathname + url.search;
@@ -28,20 +34,23 @@ app.all('*', async (req, res) => {
     delete proxyReq.headers.host;
 
     const proxyRes = await fetch(targetUrl, proxyReq);
-    console.log(`HTTP 响应: ${proxyRes.status}`);
 
     res.status(proxyRes.status);
     for (const [key, value] of proxyRes.headers) {
       res.set(key, value);
     }
     res.set('Cache-Control', 'no-store');
-    proxyRes.body.pipe(res);
+
+    // 安全发送响应
+    const data = await proxyRes.arrayBuffer();
+    res.send(Buffer.from(data));
   } catch (error) {
     console.error('HTTP 代理错误:', error.message);
     res.status(502).json({ error: error.message });
   }
 });
 
+// HTTP + WebSocket 共享 server
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
@@ -55,15 +64,8 @@ wss.on('connection', (ws, req) => {
   });
 
   wsTarget.on('open', () => {
-    console.log('WebSocket 目标连接成功');
-    ws.on('message', (data) => {
-      console.log('客户端消息:', data.toString());
-      wsTarget.send(data);
-    });
-    wsTarget.on('message', (data) => {
-      console.log('目标消息:', data.toString());
-      ws.send(data);
-    });
+    ws.on('message', (data) => wsTarget.send(data));
+    wsTarget.on('message', (data) => ws.send(data));
   });
 
   wsTarget.on('error', (err) => console.error('WebSocket 目标错误:', err.message));
@@ -73,6 +75,7 @@ wss.on('connection', (ws, req) => {
   ws.on('close', () => wsTarget.close());
 });
 
-server.listen(PORT, () => {
+// **关键修改**: 绑定 0.0.0.0，使用 Cloud Run 指定端口
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`服务器启动成功，监听端口 ${PORT}`);
 });
